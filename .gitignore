@@ -1,0 +1,8 @@
+.DS_Store
+*.db
+*.sqlite
+test_output.html
+data/
+*.pyc
+__pycache__/
+.env
