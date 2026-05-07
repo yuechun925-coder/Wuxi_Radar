@@ -1,320 +1,231 @@
+"""
+email_sender.py  —  HTML 日报生成 + 邮件发送
+"""
+
 import os
 import smtplib
+from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from datetime import datetime
 
-def get_html_template():
-    return '''
-<!DOCTYPE html>
+
+# ──────────────────────────────────────────────
+# HTML 生成
+# ──────────────────────────────────────────────
+
+_CSS = """
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif;background:#f0f2f5;margin:0;padding:20px}
+.wrap{max-width:860px;margin:0 auto}
+.header{background:linear-gradient(135deg,#1D9E75,#0F6E56);color:#fff;padding:24px 28px;border-radius:12px 12px 0 0}
+.header h1{margin:0;font-size:22px;font-weight:500}
+.header p{margin:6px 0 0;opacity:.85;font-size:14px}
+.body{background:#fff;padding:24px 28px;border-radius:0 0 12px 12px}
+.section-title{font-size:13px;font-weight:500;color:#888;letter-spacing:.06em;text-transform:uppercase;margin:0 0 14px}
+/* 企业卡片 */
+.card{border:0.5px solid #e0e0e0;border-radius:10px;padding:18px 20px;margin-bottom:16px}
+.card:hover{box-shadow:0 4px 14px rgba(0,0,0,.06)}
+.card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
+.company-name{font-size:17px;font-weight:500;color:#1a1a1a}
+.score-badge{font-size:13px;font-weight:500;padding:3px 12px;border-radius:20px;background:#E1F5EE;color:#085041}
+.score-high{background:#E1F5EE;color:#085041}
+.score-mid{background:#FAEEDA;color:#633806}
+.score-low{background:#F1EFE8;color:#5F5E5A}
+.tags{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+.tag{font-size:12px;padding:2px 9px;border-radius:14px;background:#E6F1FB;color:#0C447C}
+.tag.round{background:#EEEDFE;color:#3C3489}
+.tag.amount{background:#E1F5EE;color:#085041}
+.reason{background:#f8f9fb;border-left:3px solid #1D9E75;border-radius:0 6px 6px 0;padding:10px 14px;margin-bottom:14px;font-size:13px;color:#444;line-height:1.6}
+.contacts{border-top:0.5px solid #eee;padding-top:12px;display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.contact-item{font-size:13px;color:#555}
+.contact-item strong{color:#222}
+.link-list{list-style:none;padding:0;margin:8px 0 0}
+.link-list li{margin-bottom:4px;font-size:12px}
+.link-list a{color:#1D9E75;text-decoration:none}
+/* FA 推荐表 */
+.fa-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
+.fa-table th{text-align:left;padding:8px 10px;background:#f5f5f5;color:#555;font-weight:500;border-bottom:1px solid #e0e0e0}
+.fa-table td{padding:8px 10px;border-bottom:0.5px solid #f0f0f0;color:#333}
+.fa-table tr:last-child td{border-bottom:none}
+/* 空状态 */
+.empty{text-align:center;padding:40px 20px;color:#999}
+.empty p{margin:4px 0;font-size:14px}
+.footer{text-align:center;padding:16px;color:#aaa;font-size:12px}
+"""
+
+
+def _score_class(score: int) -> str:
+    if score >= 7:
+        return "score-high"
+    elif score >= 5:
+        return "score-mid"
+    return "score-low"
+
+
+def _company_card(c: dict) -> str:
+    score = c.get("score", 0)
+    sc = _score_class(score)
+
+    tags_html = ""
+    if c.get("industry"):
+        tags_html += f'<span class="tag">{c["industry"]}</span>'
+    if c.get("funding_round"):
+        tags_html += f'<span class="tag round">{c["funding_round"]}</span>'
+    if c.get("amount"):
+        tags_html += f'<span class="tag amount">{c["amount"]}</span>'
+    if c.get("source"):
+        tags_html += f'<span class="tag" style="background:#F1EFE8;color:#5F5E5A">{c["source"]}</span>'
+
+    contacts_html = ""
+    fields = [
+        ("法定代表人", c.get("legal_representative") or c.get("founder_name", "")),
+        ("联系电话", c.get("phone", "")),
+        ("邮箱", c.get("email", "")),
+        ("地址", c.get("address", "")),
+        ("LinkedIn", c.get("linkedin", "")),
+    ]
+    for label, val in fields:
+        if val:
+            if label == "LinkedIn":
+                val_html = f'<a href="{val}" style="color:#1D9E75">{val[:50]}</a>'
+            elif label == "邮箱":
+                val_html = f'<a href="mailto:{val}" style="color:#1D9E75">{val}</a>'
+            else:
+                val_html = val
+            contacts_html += f'<div class="contact-item"><strong>{label}：</strong>{val_html}</div>'
+
+    google_html = ""
+    gr = c.get("google_results", [])
+    if gr:
+        items = "".join(
+            f'<li><a href="{r["url"]}" target="_blank">{r["title"][:50]}</a>'
+            f'<span style="color:#999"> — {r["snippet"][:60]}</span></li>'
+            for r in gr[:3] if r.get("title")
+        )
+        if items:
+            google_html = f'<ul class="link-list">{items}</ul>'
+
+    date_str = c.get("funding_date", "")
+
+    return f"""
+<div class="card">
+  <div class="card-header">
+    <div class="company-name">{c.get("company_name","")}</div>
+    <div class="score-badge {sc}">{score}分</div>
+  </div>
+  <div class="tags">{tags_html}{'<span class="tag" style="background:#f5f5f5;color:#888">'+date_str+'</span>' if date_str else ''}</div>
+  <div class="reason"><strong>AI 评估：</strong>{c.get("reason","")}</div>
+  {'<div class="contacts">'+contacts_html+'</div>' if contacts_html else ''}
+  {google_html}
+</div>"""
+
+
+def _fa_table(fa_list: list) -> str:
+    def _link(f):
+        hint = f.get("contact_hint", "")
+        if hint:
+            return f'<a href="https://{hint}" style="color:#1D9E75">官网</a>'
+        return "—"
+
+    rows = "".join(
+        f'<tr><td><strong>{f["name"]}</strong></td><td>{f["focus"]}</td>'
+        f'<td>{_link(f)}</td></tr>'
+        for f in fa_list
+    )
+    return f"""
+<table class="fa-table">
+  <thead><tr><th>机构名称</th><th>重点赛道</th><th>联系</th></tr></thead>
+  <tbody>{rows}</tbody>
+</table>"""
+
+
+def generate_html(companies: list, fa_recommendations: list = None) -> str:
+    today = datetime.now().strftime("%Y年%m月%d日")
+    count = len(companies)
+
+    if count > 0:
+        summary = f"今日发现 <strong>{count}</strong> 家符合条件的目标企业"
+        cards_html = "".join(_company_card(c) for c in companies)
+        main_html = f"""
+<p class="section-title">今日目标企业</p>
+{cards_html}"""
+    else:
+        summary = "今日暂无新目标企业（展示 FA 中介资源，可冷外联获取项目线索）"
+        main_html = """
+<div class="empty">
+  <p>📭 今日融资快讯中暂无新增符合条件的企业</p>
+  <p style="color:#bbb;font-size:12px">明日将继续扫描，以下为可冷外联的 FA / 投资机构资源</p>
+</div>"""
+
+    fa_section = ""
+    if fa_recommendations:
+        fa_section = f"""
+<div style="margin-top:24px">
+  <p class="section-title">可冷外联的 FA / 投资机构（间接获取项目）</p>
+  <p style="font-size:13px;color:#888;margin:0 0 10px">这些机构的 portfolio 企业是优质招商目标，通过 FA 推荐入园可大幅降低销售成本</p>
+  {_fa_table(fa_recommendations)}
+</div>"""
+
+    return f"""<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>招商情报日报</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background-color: #f5f5f5;
-            margin: 0;
-            padding: 20px;
-        }
-        .container {
-            max-width: 900px;
-            margin: 0 auto;
-            background-color: white;
-            border-radius: 12px;
-            box-shadow: 0 2px 12px rgba(0,0,0,0.1);
-            overflow: hidden;
-        }
-        .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 24px;
-            text-align: center;
-        }
-        .header h1 {
-            margin: 0;
-            font-size: 24px;
-        }
-        .header p {
-            margin: 8px 0 0;
-            opacity: 0.9;
-        }
-        .content {
-            padding: 24px;
-        }
-        .company-card {
-            background-color: #fff;
-            border: 1px solid #e0e0e0;
-            border-radius: 8px;
-            padding: 20px;
-            margin-bottom: 20px;
-            transition: box-shadow 0.2s;
-        }
-        .company-card:hover {
-            box-shadow: 0 4px 16px rgba(0,0,0,0.08);
-        }
-        .company-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            margin-bottom: 16px;
-        }
-        .company-name {
-            font-size: 20px;
-            font-weight: 600;
-            color: #333;
-        }
-        .score {
-            background-color: #4CAF50;
-            color: white;
-            padding: 4px 12px;
-            border-radius: 20px;
-            font-size: 16px;
-            font-weight: bold;
-        }
-        .score.medium {
-            background-color: #FF9800;
-        }
-        .score.high {
-            background-color: #4CAF50;
-        }
-        .info-row {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 16px;
-            margin-bottom: 12px;
-            font-size: 14px;
-            color: #666;
-        }
-        .info-item {
-            display: flex;
-            align-items: center;
-        }
-        .info-label {
-            font-weight: 500;
-            color: #333;
-            margin-right: 4px;
-        }
-        .reason-box {
-            background-color: #f8f9fa;
-            border-left: 4px solid #667eea;
-            padding: 12px 16px;
-            border-radius: 0 4px 4px 0;
-            margin-bottom: 16px;
-        }
-        .reason-box p {
-            margin: 0;
-            font-size: 14px;
-            color: #444;
-            line-height: 1.6;
-        }
-        .contacts-section {
-            margin-top: 16px;
-            padding-top: 16px;
-            border-top: 1px solid #eee;
-        }
-        .contact-item {
-            display: flex;
-            align-items: center;
-            margin-bottom: 8px;
-            font-size: 14px;
-        }
-        .contact-icon {
-            width: 20px;
-            height: 20px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            margin-right: 8px;
-            color: #667eea;
-        }
-        .google-links {
-            margin-top: 12px;
-        }
-        .google-links h4 {
-            margin: 0 0 8px;
-            font-size: 14px;
-            color: #333;
-        }
-        .google-links ul {
-            margin: 0;
-            padding-left: 20px;
-        }
-        .google-links li {
-            margin-bottom: 4px;
-            font-size: 13px;
-        }
-        .google-links a {
-            color: #667eea;
-            text-decoration: none;
-        }
-        .google-links a:hover {
-            text-decoration: underline;
-        }
-        .footer {
-            background-color: #f5f5f5;
-            padding: 16px 24px;
-            text-align: center;
-            color: #888;
-            font-size: 13px;
-        }
-        .no-companies {
-            text-align: center;
-            padding: 40px;
-            color: #888;
-        }
-        .no-companies p {
-            margin: 0;
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>招商情报日报 · {today}</title>
+<style>{_CSS}</style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>🏭 招商情报日报</h1>
-            <p>日期: __DATE_STR__</p>
-        </div>
-        <div class="content">
-            __COMPANY_CARDS__
-        </div>
-        <div class="footer">
-            <p>自动生成 - 招商情报系统</p>
-        </div>
-    </div>
+<div class="wrap">
+  <div class="header">
+    <h1>🏭 无锡园区 · 招商情报日报</h1>
+    <p>{today} · {summary}</p>
+  </div>
+  <div class="body">
+    {main_html}
+    {fa_section}
+  </div>
+  <div class="footer">自动生成 · Wuxi Radar · 数据来源：36氪 / 投资界 / 创业邦 / IT桔子</div>
+</div>
 </body>
-</html>
-'''
+</html>"""
 
-def get_company_card_template():
-    return '''
-<div class="company-card">
-    <div class="company-header">
-        <div class="company-name">__COMPANY_NAME__</div>
-        <div class="score __SCORE_CLASS__">__SCORE__分</div>
-    </div>
-    <div class="info-row">
-        <div class="info-item"><span class="info-label">融资轮次:</span> __FUNDING_ROUND__</div>
-        <div class="info-item"><span class="info-label">融资金额:</span> __AMOUNT__</div>
-        <div class="info-item"><span class="info-label">行业:</span> __INDUSTRY__</div>
-        <div class="info-item"><span class="info-label">日期:</span> __FUNDING_DATE__</div>
-    </div>
-    <div class="reason-box">
-        <p><strong>AI评估理由:</strong> __REASON__</p>
-    </div>
-    <div class="contacts-section">
-        <div class="contact-item">
-            <span class="contact-icon">👤</span>
-            <span><strong>法定代表人:</strong> __LEGAL_REPRESENTATIVE__</span>
-        </div>
-        <div class="contact-item">
-            <span class="contact-icon">📞</span>
-            <span><strong>联系电话:</strong> __PHONE__</span>
-        </div>
-        <div class="contact-item">
-            <span class="contact-icon">📧</span>
-            <span><strong>邮箱:</strong> __EMAIL__</span>
-        </div>
-        <div class="contact-item">
-            <span class="contact-icon">📍</span>
-            <span><strong>地址:</strong> __ADDRESS__</span>
-        </div>
-        __GOOGLE_LINKS__
-    </div>
-</div>
-'''
 
-def get_google_links_template():
-    return '''
-<div class="google-links">
-    <h4>🔍 相关搜索结果:</h4>
-    <ul>
-        __LINKS__
-    </ul>
-</div>
-'''
+# ──────────────────────────────────────────────
+# 邮件发送
+# ──────────────────────────────────────────────
 
-def generate_html(companies):
-    date_str = datetime.now().strftime("%Y年%m月%d日")
-    template = get_html_template()
-    
-    if not companies:
-        company_cards = '<div class="no-companies"><p>今日暂无符合条件的招商目标企业</p></div>'
-    else:
-        company_cards = ""
-        card_template = get_company_card_template()
-        
-        for company in companies:
-            score = company['score']
-            score_class = 'high' if score >= 8 else 'medium' if score >= 6 else ''
-            
-            if company['google_results']:
-                links_html = "\n".join([f'<li><a href="{link}" target="_blank">{link}</a></li>' for link in company['google_results']])
-                google_links_html = get_google_links_template().replace('__LINKS__', links_html)
-            else:
-                google_links_html = ""
-            
-            card = card_template.replace('__COMPANY_NAME__', company.get('company_name', '')) \
-                               .replace('__SCORE__', str(score)) \
-                               .replace('__SCORE_CLASS__', score_class) \
-                               .replace('__FUNDING_ROUND__', company.get('funding_round', '')) \
-                               .replace('__AMOUNT__', company.get('amount', '')) \
-                               .replace('__INDUSTRY__', company.get('industry', '')) \
-                               .replace('__FUNDING_DATE__', company.get('funding_date', '')) \
-                               .replace('__REASON__', company.get('reason', '')) \
-                               .replace('__LEGAL_REPRESENTATIVE__', company.get('legal_representative', '未找到')) \
-                               .replace('__PHONE__', company.get('phone', '未找到')) \
-                               .replace('__EMAIL__', company.get('email', '未找到')) \
-                               .replace('__ADDRESS__', company.get('address', '未找到')) \
-                               .replace('__GOOGLE_LINKS__', google_links_html)
-            
-            company_cards += card
-    
-    return template.replace('__DATE_STR__', date_str).replace('__COMPANY_CARDS__', company_cards)
+def send_email(html: str):
+    gmail_user = os.getenv("GMAIL_USER", "")
+    gmail_password = os.getenv("GMAIL_PASSWORD", "")
+    recipient = os.getenv("RECIPIENT_EMAIL", gmail_user)
 
-def send_email(html_content):
-    sender_email = os.getenv("GMAIL_USER")
-    sender_password = os.getenv("GMAIL_PASSWORD")
-    recipient_email = os.getenv("RECIPIENT_EMAIL")
-    
-    if not sender_email or not sender_password or not recipient_email:
-        raise ValueError("GMAIL_USER, GMAIL_PASSWORD, RECIPIENT_EMAIL environment variables not set")
-    
-    msg = MIMEMultipart()
-    msg['From'] = sender_email
-    msg['To'] = recipient_email
-    msg['Subject'] = f"🏭 招商情报日报 - {datetime.now().strftime('%Y-%m-%d')}"
-    
-    msg.attach(MIMEText(html_content, 'html', 'utf-8'))
-    
+    if not gmail_user or not gmail_password:
+        print("[邮件] 未配置 GMAIL_USER / GMAIL_PASSWORD，跳过发送")
+        return
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = f"招商情报日报 · {today}"
+    msg["From"] = gmail_user
+    msg["To"] = recipient
+    msg.attach(MIMEText(html, "html", "utf-8"))
+
     try:
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-            server.login(sender_email, sender_password)
-            server.send_message(msg)
-        print("邮件发送成功")
-        return True
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(gmail_user, gmail_password)
+            server.sendmail(gmail_user, [recipient], msg.as_string())
+        print(f"[邮件] 已发送至 {recipient}")
     except Exception as e:
-        print(f"邮件发送失败: {e}")
-        return False
+        print(f"[邮件] 发送失败: {e}")
 
-if __name__ == "__main__":
-    test_companies = [
-        {
-            'company_name': '示例生物科技公司',
-            'score': 8,
-            'funding_round': 'B轮',
-            'amount': '5000万元',
-            'industry': '生物医药',
-            'funding_date': '2024-01-15',
-            'reason': '行业匹配度高，发展阶段成熟，需要厂房进行生产',
-            'legal_representative': '张三',
-            'phone': '13800138000',
-            'email': 'contact@example.com',
-            'address': '北京市朝阳区科技园区',
-            'google_results': ['https://example.com']
-        }
-    ]
-    
-    html = generate_html(test_companies)
-    print(html)
+
+# ──────────────────────────────────────────────
+# 兼容旧接口（main.py 调用的）
+# ──────────────────────────────────────────────
+
+def get_tianyancha_recommendations() -> list:
+    """
+    保持与 main.py 接口兼容，返回 FA 机构列表。
+    原名 get_tianyancha_recommendations 保留不变。
+    """
+    from src.contacts import get_fa_recommendations
+    return get_fa_recommendations()
