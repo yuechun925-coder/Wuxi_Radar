@@ -1,38 +1,57 @@
 import os
 import sys
 from dotenv import load_dotenv
-from src.crawler import crawl_36kr_funding
+from src.crawler import crawl_all_sources
 from src.ai_scorer import score_company
 from src.contacts import get_company_contacts
-from src.database import init_database, is_processed, mark_processed
-from src.email_sender import generate_html, send_email
+from src.database import init_database, get_unprocessed_news, mark_news_processed, cleanup_old_records
+from src.email_sender import generate_html, send_email, get_tianyancha_recommendations
 
 def main(test_mode=False):
     load_dotenv()
     
     init_database()
+    cleanup_old_records(30)
     
-    print("开始爬取36氪融资数据...")
-    funding_data = crawl_36kr_funding()
-    print(f"获取到 {len(funding_data)} 条融资信息")
+    print("开始爬取融资数据...")
+    funding_data = crawl_all_sources()
     
     if not funding_data:
         print("未获取到融资数据")
-        if not test_mode:
-            html = generate_html([])
+        recommendations = get_tianyancha_recommendations()
+        html = generate_html([], recommendations)
+        
+        if test_mode:
+            print("测试模式 - 生成的HTML内容已保存到 test_output.html")
+            with open("test_output.html", "w", encoding="utf-8") as f:
+                f.write(html)
+        else:
+            print("发送邮件...")
+            send_email(html)
+        return
+    
+    unprocessed_data = get_unprocessed_news(funding_data)
+    
+    if not unprocessed_data:
+        print("所有新闻均已处理过")
+        recommendations = get_tianyancha_recommendations()
+        html = generate_html([], recommendations)
+        
+        if test_mode:
+            print("测试模式 - 生成的HTML内容已保存到 test_output.html")
+            with open("test_output.html", "w", encoding="utf-8") as f:
+                f.write(html)
+        else:
+            print("发送邮件...")
             send_email(html)
         return
     
     qualified_companies = []
     
-    for item in funding_data:
+    for item in unprocessed_data:
         company_name = item.get('company_name', '')
         
         if not company_name:
-            continue
-        
-        if is_processed(company_name):
-            print(f"公司 {company_name} 已处理过，跳过")
             continue
         
         print(f"处理公司: {company_name}")
@@ -41,8 +60,9 @@ def main(test_mode=False):
         funding_round = item.get('funding_round', '')
         amount = item.get('amount', '')
         funding_date = item.get('funding_date', '')
+        source = item.get('source', '未知')
         
-        print(f"  行业: {industry}, 轮次: {funding_round}, 金额: {amount}")
+        print(f"  行业: {industry}, 轮次: {funding_round}, 金额: {amount}, 来源: {source}")
         
         ai_result = score_company(company_name, industry, funding_round, amount)
         score = ai_result.get('score', 0)
@@ -51,7 +71,7 @@ def main(test_mode=False):
         
         print(f"  AI评分: {score}, 需要厂房: {need_factory}")
         
-        if score >= 6 and need_factory:
+        if score >= 4 and need_factory:
             print(f"  ✓ 符合条件")
             
             if test_mode:
@@ -61,6 +81,7 @@ def main(test_mode=False):
                     'funding_round': funding_round,
                     'amount': amount,
                     'funding_date': funding_date,
+                    'source': source,
                     'score': score,
                     'reason': reason,
                     'legal_representative': '测试数据',
@@ -79,6 +100,7 @@ def main(test_mode=False):
                     'funding_round': funding_round,
                     'amount': amount,
                     'funding_date': funding_date,
+                    'source': source,
                     'score': score,
                     'reason': reason,
                     'legal_representative': contacts.get('legal_representative', ''),
@@ -90,11 +112,16 @@ def main(test_mode=False):
             
             qualified_companies.append(qualified_company)
         
-        mark_processed(company_name)
+        mark_news_processed(company_name, source, funding_date)
     
     print(f"\n共找到 {len(qualified_companies)} 家符合条件的公司")
     
-    html = generate_html(qualified_companies)
+    if not qualified_companies:
+        recommendations = get_tianyancha_recommendations()
+    else:
+        recommendations = None
+    
+    html = generate_html(qualified_companies, recommendations)
     
     if test_mode:
         print("\n测试模式 - 生成的HTML内容已保存到 test_output.html")
