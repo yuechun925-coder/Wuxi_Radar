@@ -21,7 +21,6 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 .header p{margin:6px 0 0;opacity:.85;font-size:14px}
 .body{background:#fff;padding:24px 28px;border-radius:0 0 12px 12px}
 .section-title{font-size:13px;font-weight:500;color:#888;letter-spacing:.06em;text-transform:uppercase;margin:0 0 14px}
-/* 企业卡片 */
 .card{border:0.5px solid #e0e0e0;border-radius:10px;padding:18px 20px;margin-bottom:16px}
 .card:hover{box-shadow:0 4px 14px rgba(0,0,0,.06)}
 .card-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}
@@ -41,12 +40,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica N
 .link-list{list-style:none;padding:0;margin:8px 0 0}
 .link-list li{margin-bottom:4px;font-size:12px}
 .link-list a{color:#1D9E75;text-decoration:none}
-/* FA 推荐表 */
 .fa-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:8px}
 .fa-table th{text-align:left;padding:8px 10px;background:#f5f5f5;color:#555;font-weight:500;border-bottom:1px solid #e0e0e0}
 .fa-table td{padding:8px 10px;border-bottom:0.5px solid #f0f0f0;color:#333}
 .fa-table tr:last-child td{border-bottom:none}
-/* 空状态 */
 .empty{text-align:center;padding:40px 20px;color:#999}
 .empty p{margin:4px 0;font-size:14px}
 .footer{text-align:center;padding:16px;color:#aaa;font-size:12px}
@@ -82,13 +79,19 @@ def _company_card(c: dict) -> str:
         ("邮箱", c.get("email", "")),
         ("地址", c.get("address", "")),
         ("LinkedIn", c.get("linkedin", "")),
+        ("官网", c.get("website", "")),
+        ("天眼查", c.get("tianyancha_url", "")),
     ]
     for label, val in fields:
         if val:
-            if label == "LinkedIn":
-                val_html = f'<a href="{val}" style="color:#1D9E75">{val[:50]}</a>'
+            if label == "LinkedIn" or label == "官网":
+                if not val.startswith("http"):
+                    val = f"https://{val}"
+                val_html = f'<a href="{val}" target="_blank" style="color:#1D9E75;text-decoration:none">{val[:60]}</a>'
+            elif label == "天眼查":
+                val_html = f'<a href="{val}" target="_blank" style="color:#1D9E75;text-decoration:none">查看详情</a>'
             elif label == "邮箱":
-                val_html = f'<a href="mailto:{val}" style="color:#1D9E75">{val}</a>'
+                val_html = f'<a href="mailto:{val}" style="color:#1D9E75;text-decoration:none">{val}</a>'
             else:
                 val_html = val
             contacts_html += f'<div class="contact-item"><strong>{label}：</strong>{val_html}</div>'
@@ -97,7 +100,7 @@ def _company_card(c: dict) -> str:
     gr = c.get("google_results", [])
     if gr:
         items = "".join(
-            f'<li><a href="{r["url"]}" target="_blank">{r["title"][:50]}</a>'
+            f'<li><a href="{r["url"]}" target="_blank" style="color:#1D9E75;text-decoration:none">{r["title"][:50]}</a>'
             f'<span style="color:#999"> — {r["snippet"][:60]}</span></li>'
             for r in gr[:3] if r.get("title")
         )
@@ -105,16 +108,22 @@ def _company_card(c: dict) -> str:
             google_html = f'<ul class="link-list">{items}</ul>'
 
     date_str = c.get("funding_date", "")
+    company_name = c.get("company_name", "")
+    company_link = c.get("website", c.get("tianyancha_url", ""))
+    if company_link and not company_link.startswith("http"):
+        company_link = f"https://{company_link}"
+    
+    company_name_html = f'<a href="{company_link}" target="_blank" style="color:#1a1a1a;text-decoration:none">{company_name}</a>' if company_link else company_name
 
     return f"""
 <div class="card">
   <div class="card-header">
-    <div class="company-name">{c.get("company_name","")}</div>
+    <div class="company-name">{company_name_html}</div>
     <div class="score-badge {sc}">{score}分</div>
   </div>
   <div class="tags">{tags_html}{'<span class="tag" style="background:#f5f5f5;color:#888">'+date_str+'</span>' if date_str else ''}</div>
   <div class="reason"><strong>AI 评估：</strong>{c.get("reason","")}</div>
-  {'<div class="contacts">'+contacts_html+'</div>' if contacts_html else ''}
+  {'<div class="contacts">'+contacts_html+'</div>' if contacts_html else '<div class="contacts"><div class="contact-item" style="color:#999">联系方式获取中...</div></div>'}
   {google_html}
 </div>"""
 
@@ -218,14 +227,6 @@ def send_email(html: str):
         print(f"[邮件] 发送失败: {e}")
 
 
-# ──────────────────────────────────────────────
-# 兼容旧接口（main.py 调用的）
-# ──────────────────────────────────────────────
-
 def get_tianyancha_recommendations() -> list:
-    """
-    保持与 main.py 接口兼容，返回 FA 机构列表。
-    原名 get_tianyancha_recommendations 保留不变。
-    """
     from src.contacts import get_fa_recommendations
     return get_fa_recommendations()
