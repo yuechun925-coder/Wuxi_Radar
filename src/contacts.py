@@ -1,9 +1,5 @@
 """
 contacts.py  —  联系人信息查询模块
-策略：
-  1. Google 搜索（用 requests 直接查，不依赖 google 包）
-  2. 天眼查公开页面解析（无需 API）
-  3. 企查查公开页面解析
 """
 
 import re
@@ -12,11 +8,6 @@ import random
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import quote_plus
-
-
-# ──────────────────────────────────────────────
-# 工具函数
-# ──────────────────────────────────────────────
 
 def _headers(referer="https://www.google.com"):
     return {
@@ -29,16 +20,7 @@ def _headers(referer="https://www.google.com"):
 def _sleep():
     time.sleep(random.uniform(1.0, 2.5))
 
-
-# ──────────────────────────────────────────────
-# Google 搜索（直接请求，不用 google 包）
-# ──────────────────────────────────────────────
-
-def _google_search(query: str, num: int = 5) -> list[dict]:
-    """
-    通过 requests 直接请求 Google，解析搜索结果摘要。
-    返回 [{"title": ..., "url": ..., "snippet": ...}]
-    """
+def _google_search(query: str, num: int = 5) -> list:
     results = []
     url = f"https://www.google.com/search?q={quote_plus(query)}&num={num}&hl=zh-CN"
     try:
@@ -57,14 +39,11 @@ def _google_search(query: str, num: int = 5) -> list[dict]:
                 "url": a.get("href", ""),
                 "snippet": snippet_tag.get_text(strip=True) if snippet_tag else "",
             })
-    except Exception as e:
-        print(f"    [Google] 搜索失败: {e}，尝试 Bing")
+    except:
         return _bing_search(query, num)
     return results
 
-
-def _bing_search(query: str, num: int = 5) -> list[dict]:
-    """Google 失败时 fallback 到 Bing"""
+def _bing_search(query: str, num: int = 5) -> list:
     results = []
     url = f"https://www.bing.com/search?q={quote_plus(query)}&count={num}"
     try:
@@ -82,26 +61,20 @@ def _bing_search(query: str, num: int = 5) -> list[dict]:
                 "url": a.get("href", ""),
                 "snippet": snippet_tag.get_text(strip=True) if snippet_tag else "",
             })
-    except Exception as e:
-        print(f"    [Bing] 搜索失败: {e}")
+    except:
+        pass
     return results
 
-
-# ──────────────────────────────────────────────
-# 天眼查公开页面解析（无需 API）
-# ──────────────────────────────────────────────
-
 def _tianyancha_search(company_name: str) -> dict:
-    """搜索天眼查获取法定代表人等基本信息"""
     info = {}
     try:
-        search_url = f"https://www.tianyancha.com/cloud-other-information/companyinfo/index.html#/search/{quote_plus(company_name)}"
-        # 搜索页（天眼查对 bot 防护较强，先用 Google 搜索天眼查的结果）
         query = f'site:tianyancha.com "{company_name}"'
         results = _google_search(query, 3) or _bing_search(query, 3)
         for r in results:
+            url = r.get("url", "")
             snippet = r.get("snippet", "")
-            # 尝试从摘要中提取法定代表人
+            if "tianyancha.com" in url:
+                info["tianyancha_url"] = url
             rep_m = re.search(r"法定代表人[：:]\s*([\u4e00-\u9fa5]{2,6})", snippet)
             if rep_m:
                 info["legal_representative"] = rep_m.group(1)
@@ -113,53 +86,42 @@ def _tianyancha_search(company_name: str) -> dict:
                 info["address"] = addr_m.group(1)
             if info:
                 break
-    except Exception as e:
-        print(f"    [天眼查] 解析失败: {e}")
+    except:
+        pass
     return info
 
-
-# ──────────────────────────────────────────────
-# 创始人/CEO 联系方式搜索
-# ──────────────────────────────────────────────
-
 def _find_founder_contact(company_name: str) -> dict:
-    """
-    搜索创始人/CEO 邮箱、LinkedIn、微信公众号等。
-    """
     info = {}
     queries = [
         f'"{company_name}" CEO OR 创始人 OR 董事长 邮箱 OR email',
         f'"{company_name}" 创始人 OR CEO LinkedIn',
-        f'"{company_name}" 联系方式 OR investor relations',
+        f'"{company_name}" 官网 OR official website',
     ]
     all_results = []
-    for q in queries[:2]:  # 最多查 2 个 query 控制速度
+    for q in queries[:3]:
         results = _google_search(q, 5)
         all_results.extend(results)
         _sleep()
 
-    combined_text = " ".join(
-        r.get("snippet", "") + " " + r.get("title", "") for r in all_results
-    )
+    combined_text = " ".join(r.get("snippet", "") + " " + r.get("title", "") for r in all_results)
 
-    # 邮箱
-    email_m = re.search(
-        r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", combined_text
-    )
+    email_m = re.search(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", combined_text)
     if email_m:
         email = email_m.group(0)
-        # 过滤明显的无效邮箱
         if not any(bad in email for bad in ["example", "test@", "xxx@", "abc@"]):
             info["email"] = email
 
-    # LinkedIn
-    linkedin_results = [
-        r for r in all_results if "linkedin.com" in r.get("url", "")
-    ]
+    linkedin_results = [r for r in all_results if "linkedin.com" in r.get("url", "")]
     if linkedin_results:
         info["linkedin"] = linkedin_results[0]["url"]
 
-    # 姓名提取（从摘要中）
+    website_results = [
+        r for r in all_results 
+        if "www." in r.get("url", "") and not any(domain in r["url"] for domain in ["tianyancha", "qcc", "baidu", "google", "bing", "zhihu", "weibo"])
+    ]
+    if website_results:
+        info["website"] = website_results[0]["url"]
+
     name_patterns = [
         r"创始人\s*([\u4e00-\u9fa5]{2,4})",
         r"CEO\s*([\u4e00-\u9fa5]{2,4})",
@@ -175,7 +137,6 @@ def _find_founder_contact(company_name: str) -> dict:
                 info["founder_name"] = candidate
                 break
 
-    # 搜索结果摘要（供邮件展示）
     info["google_results"] = [
         {"title": r["title"], "url": r["url"], "snippet": r["snippet"][:100]}
         for r in all_results[:4]
@@ -184,16 +145,7 @@ def _find_founder_contact(company_name: str) -> dict:
 
     return info
 
-
-# ──────────────────────────────────────────────
-# 主入口
-# ──────────────────────────────────────────────
-
 def get_company_contacts(company_name: str) -> dict:
-    """
-    综合查询公司联系人信息。
-    返回字段：legal_representative, phone, email, address, founder_name, linkedin, google_results
-    """
     contacts = {
         "legal_representative": "",
         "phone": "",
@@ -201,27 +153,21 @@ def get_company_contacts(company_name: str) -> dict:
         "address": "",
         "founder_name": "",
         "linkedin": "",
+        "website": "",
+        "tianyancha_url": "",
         "google_results": [],
     }
 
-    print(f"    [联系人] 查询天眼查: {company_name}")
     tyc_info = _tianyancha_search(company_name)
     contacts.update({k: v for k, v in tyc_info.items() if v})
     _sleep()
 
-    print(f"    [联系人] 搜索创始人信息: {company_name}")
     founder_info = _find_founder_contact(company_name)
-    # 合并（不覆盖已有数据）
     for key, val in founder_info.items():
         if val and not contacts.get(key):
             contacts[key] = val
 
     return contacts
-
-
-# ──────────────────────────────────────────────
-# 中介推荐（FA / 投资顾问）
-# ──────────────────────────────────────────────
 
 KNOWN_FA_FIRMS = [
     {"name": "华兴资本", "focus": "生物医药、科技", "contact_hint": "hx.cn"},
@@ -237,9 +183,4 @@ KNOWN_FA_FIRMS = [
 ]
 
 def get_fa_recommendations() -> list:
-    """
-    返回与园区目标产业匹配的 FA 机构推荐列表，
-    供"今日暂无目标企业"时在邮件中展示，
-    引导对 FA 进行冷外联以间接获取企业资源。
-    """
     return KNOWN_FA_FIRMS
